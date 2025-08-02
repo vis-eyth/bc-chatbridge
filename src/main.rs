@@ -28,6 +28,19 @@ struct ChatMessage {
     pub content: String,
     pub timestamp: i32,
 }
+impl ChatMessage {
+    pub fn new(username: String, content: String, timestamp: i32) -> Self {
+        ChatMessage { username, content: content.replace("\"", "\\\""), timestamp }
+    }
+
+    pub fn claim(username: String, claim: String, content: String, timestamp: i32) -> Self {
+        ChatMessage::new(format!("{} [{}]", username, claim), content, timestamp)
+    }
+
+    pub fn empire(username: String, empire: String, content: String, timestamp: i32) -> Self {
+        ChatMessage::new(format!("{} [{}]", username, empire), content, timestamp)
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -97,40 +110,32 @@ fn on_connected(ctx: &DbConnection, tx: &mpsc::UnboundedSender<ChatMessage>) {
 fn on_message(ctx: &EventContext, row: &ChatMessageState, tx: &mpsc::UnboundedSender<ChatMessage>) {
     let row = row.clone();
     match row.channel_id {
-        6 | 5 => {
-            let postfix = ctx.db.empire_state()
+        6 | 5 => {  // 6 is private empire chat, 5 is public empire chat
+            let empire = ctx.db.empire_state()
                 .entity_id()
                 .find(&row.target_id)
-                .map_or_else(|| None, |e| Some(e.name));
+                .map(|e| e.name);
 
-            if postfix.is_none() { return; }
-            tx.send(ChatMessage {
-                username: format!("{} [{}]", row.username, postfix.unwrap()),
-                content: row.text.replace('"', "\\\""),
-                timestamp: row.timestamp,
-            }).unwrap();
+            if let Some(empire) = empire {
+                tx.send(ChatMessage::empire(row.username, empire, row.text, row.timestamp)).unwrap();
+            } else {
+                eprintln!("no empire found for id {}", row.target_id);
+            }
         },
-        4 => {
-            let postfix = ctx.db.claim_state()
+        4 => {  // 4 is claim chat
+            let claim = ctx.db.claim_state()
                 .entity_id()
                 .find(&row.target_id)
-                .map_or_else(|| None, |c| Some(c.name));
+                .map(|c| c.name);
 
-            if postfix.is_none() { return; }
-            tx.send(ChatMessage {
-                username: format!("{} [{}]", row.username, postfix.unwrap()),
-                content: row.text.replace('"', "\\\""),
-                timestamp: row.timestamp,
-            }).unwrap();
+            if let Some(claim) = claim {
+                tx.send(ChatMessage::claim(row.username, claim, row.text, row.timestamp)).unwrap();
+            } else {
+                eprintln!("no claim found for id {}", row.target_id);
+            }
         },
-        3 => {
-            tx.send(ChatMessage {
-                username: row.username,
-                content: row.text.replace('"', "\\\""),
-                timestamp: row.timestamp,
-            }).unwrap();
-        }
-        _ => return
+        3 => tx.send(ChatMessage::new(row.username, row.text, row.timestamp)).unwrap(),
+        _ => ()
     };
 }
 
@@ -138,7 +143,7 @@ fn on_moderation(ctx: &EventContext, row: &UserModerationState, tx: &mpsc::Unbou
     let user = ctx.db.player_username_state()
         .entity_id()
         .find(&row.target_entity_id)
-        .map_or_else(|| None, |p| Some(p.username));
+        .map(|p| p.username);
 
     if user.is_none() { return; }
     let user = user.unwrap();
