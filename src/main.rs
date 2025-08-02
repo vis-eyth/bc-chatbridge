@@ -1,8 +1,9 @@
 mod module_bindings;
 use module_bindings::*;
+use UserModerationPolicy::*;
 
 use serde::Deserialize;
-use spacetimedb_sdk::{DbContext, Error, Table};
+use spacetimedb_sdk::{DbContext, Error, Table, Timestamp};
 use tokio::sync::mpsc;
 
 use std::path::Path;
@@ -39,6 +40,14 @@ impl ChatMessage {
 
     pub fn empire(username: String, empire: String, content: String, timestamp: i32) -> Self {
         ChatMessage::new(format!("{} [{}]", username, empire), content, timestamp)
+    }
+
+    pub fn moderation(username: String, policy: &str, expiry: &str, timestamp: i32) -> Self {
+        ChatMessage::new(
+            "<<MODERATION>>".to_string(),
+            format!("User {} has been banned from {} {}!", username, policy, expiry),
+            timestamp,
+        )
     }
 }
 
@@ -145,25 +154,26 @@ fn on_moderation(ctx: &EventContext, row: &UserModerationState, tx: &mpsc::Unbou
         .find(&row.target_entity_id)
         .map(|p| p.username);
 
-    if user.is_none() { return; }
-    let user = user.unwrap();
+    if let Some(user) = user {
+        let timestamp = (row.created_time.to_micros_since_unix_epoch() / 1_000_000) as i32;
+        let message = match row.user_moderation_policy {
+            PermanentBlockLogin =>
+                ChatMessage::moderation(user, "logging in", "permanently", timestamp),
+            TemporaryBlockLogin =>
+                ChatMessage::moderation(user, "logging in", &as_expiry(row.expiration_time), timestamp),
+            BlockChat =>
+                ChatMessage::moderation(user, "chatting", &as_expiry(row.expiration_time), timestamp),
+            BlockConstruct =>
+                ChatMessage::moderation(user, "building", &as_expiry(row.expiration_time), timestamp),
+        };
+        tx.send(message).unwrap();
+    } else {
+        eprintln!("no player found for id {}", row.target_entity_id);
+    }
+}
 
-    let message = match row.user_moderation_policy {
-        UserModerationPolicy::PermanentBlockLogin =>
-            format!("User {} has been banned from logging in permanently!", user),
-        UserModerationPolicy::TemporaryBlockLogin =>
-            format!("User {} has been banned from logging in until <t:{}:f>!", user, row.expiration_time.to_micros_since_unix_epoch() / 1_000_000),
-        UserModerationPolicy::BlockChat =>
-            format!("User {} has been banned from chatting until <t:{}:f>!", user, row.expiration_time.to_micros_since_unix_epoch() / 1_000_000),
-        UserModerationPolicy::BlockConstruct =>
-            format!("User {} has been banned from building until <t:{}:f>!", user, row.expiration_time.to_micros_since_unix_epoch() / 1_000_000),
-    };
-
-    tx.send(ChatMessage {
-        username: "<<MODERATION>>".to_string(),
-        content: message,
-        timestamp: (row.created_time.to_micros_since_unix_epoch() / 1_000_000) as i32,
-    }).unwrap();
+fn as_expiry(expiry: Timestamp) -> String {
+    format!("until <t:{}:f>!", expiry.to_micros_since_unix_epoch() / 1_000_000)
 }
 
 async fn consume_messages(mut rx: mpsc::UnboundedReceiver<ChatMessage>, start: i32, webhook_url: &str) {
