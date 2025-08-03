@@ -29,6 +29,7 @@ struct ChatMessage {
     pub content: String,
     pub timestamp: i32,
 }
+
 impl ChatMessage {
     pub fn new(username: String, content: String, timestamp: i32) -> Self {
         ChatMessage { username, content: content.replace("\"", "\\\""), timestamp }
@@ -103,7 +104,7 @@ fn on_connected(ctx: &DbConnection, tx: &mpsc::UnboundedSender<ChatMessage>) {
     println!("connected!");
     let (tx_msg, tx_mod) = (tx.clone(), tx.clone());
     ctx.db.chat_message_state()
-        .on_insert(move |ctx, row| on_message(ctx, row, &tx_msg));
+        .on_insert(move |ctx, row| on_message(ctx, row.clone(), &tx_msg));
     ctx.db.user_moderation_state()
         .on_insert(move |ctx, row| on_moderation(ctx, row, &tx_mod));
 
@@ -116,10 +117,14 @@ fn on_connected(ctx: &DbConnection, tx: &mpsc::UnboundedSender<ChatMessage>) {
     ]);
 }
 
-fn on_message(ctx: &EventContext, row: &ChatMessageState, tx: &mpsc::UnboundedSender<ChatMessage>) {
-    let row = row.clone();
+fn on_message(ctx: &EventContext, row: ChatMessageState, tx: &mpsc::UnboundedSender<ChatMessage>) {
+    const EMPIRE_INTERNAL: i32 = ChatChannel::EmpireInternal as i32;
+    const EMPIRE_PUBLIC: i32 = ChatChannel::EmpirePublic as i32;
+    const CLAIM: i32 = ChatChannel::Claim as i32;
+    const REGION: i32 = ChatChannel::Region as i32;
+
     match row.channel_id {
-        6 | 5 => {  // 6 is private empire chat, 5 is public empire chat
+        EMPIRE_INTERNAL | EMPIRE_PUBLIC => {
             let empire = ctx.db.empire_state()
                 .entity_id()
                 .find(&row.target_id)
@@ -131,7 +136,7 @@ fn on_message(ctx: &EventContext, row: &ChatMessageState, tx: &mpsc::UnboundedSe
                 eprintln!("no empire found for id {}", row.target_id);
             }
         },
-        4 => {  // 4 is claim chat
+        CLAIM => {
             let claim = ctx.db.claim_state()
                 .entity_id()
                 .find(&row.target_id)
@@ -143,8 +148,8 @@ fn on_message(ctx: &EventContext, row: &ChatMessageState, tx: &mpsc::UnboundedSe
                 eprintln!("no claim found for id {}", row.target_id);
             }
         },
-        3 => tx.send(ChatMessage::new(row.username, row.text, row.timestamp)).unwrap(),
-        _ => ()
+        REGION => tx.send(ChatMessage::new(row.username, row.text, row.timestamp)).unwrap(),
+        _ => (),
     };
 }
 
