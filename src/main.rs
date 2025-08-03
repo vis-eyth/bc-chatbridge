@@ -69,7 +69,7 @@ async fn main() {
         "SELECT * FROM empire_state",
         "SELECT * FROM player_username_state",
         &format!("SELECT * FROM chat_message_state WHERE timestamp > {}", start_ms),
-        &format!("SELECT * FROM user_moderation_state WHERE created_time > {}", start_ms * 1_000_000),
+        //&format!("SELECT * FROM user_moderation_state WHERE created_time > {}", start_ms * 1_000_000),
     ]);
 
     let mut producer = Box::pin(ctx.run_async());
