@@ -4,7 +4,6 @@ use module_bindings::{*, UserModerationPolicy::*};
 mod glue;
 use glue::{Config, Configurable, with_channel};
 
-use std::time::{SystemTime, UNIX_EPOCH};
 use spacetimedb_sdk::{DbContext, Table, Timestamp};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
@@ -59,17 +58,20 @@ async fn main() {
     ctx.db.chat_message_state().on_insert(with_channel(tx.clone(), on_message));
     ctx.db.user_moderation_state().on_insert(with_channel(tx.clone(), on_moderation));
 
-    let start_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("prehistoric times?")
-        .as_secs();
-
-    ctx.subscription_builder().subscribe([
+    let start = Timestamp::now();
+    ctx.subscription_builder()
+        .on_error(|_, err| eprintln!("subscription error: {}", err))
+        .subscribe([
         "SELECT * FROM claim_state",
         "SELECT * FROM empire_state",
         "SELECT * FROM player_username_state",
-        &format!("SELECT * FROM chat_message_state WHERE channel_id > 2 AND timestamp > {}", start_ms),
-        //&format!("SELECT * FROM user_moderation_state WHERE created_time > {}", start_ms * 1_000_000),
+        &format!(r"SELECT t.*
+                   FROM chat_message_state t
+                   WHERE t.channel_id > 2
+                     AND t.timestamp > {}", start.to_micros_since_unix_epoch() / 1_000_000),
+        &format!(r"SELECT t.*
+                   FROM user_moderation_state t
+                   WHERE t.created_time > '{}'", start),
     ]);
 
     let mut producer = Box::pin(ctx.run_async());
