@@ -27,27 +27,25 @@ const CONFIG_EMPTY: &str = r#"{
 struct ChatMessage {
     pub username: String,
     pub content: String,
-    pub timestamp: i32,
 }
 
 impl ChatMessage {
-    pub fn new(username: String, content: String, timestamp: i32) -> Self {
-        ChatMessage { username, content: content.replace("\"", "\\\""), timestamp }
+    pub fn new(username: String, content: String) -> Self {
+        ChatMessage { username, content: content.replace("\"", "\\\"") }
     }
 
-    pub fn claim(username: String, claim: String, content: String, timestamp: i32) -> Self {
-        ChatMessage::new(format!("{} [{}]", username, claim), content, timestamp)
+    pub fn claim(username: String, claim: String, content: String) -> Self {
+        ChatMessage::new(format!("{} [{}]", username, claim), content)
     }
 
-    pub fn empire(username: String, empire: String, content: String, timestamp: i32) -> Self {
-        ChatMessage::new(format!("{} [{}]", username, empire), content, timestamp)
+    pub fn empire(username: String, empire: String, content: String) -> Self {
+        ChatMessage::new(format!("{} [{}]", username, empire), content)
     }
 
-    pub fn moderation(username: String, policy: &str, expiry: &str, timestamp: i32) -> Self {
+    pub fn moderation(username: String, policy: &str, expiry: &str) -> Self {
         ChatMessage::new(
             "<<MODERATION>>".to_string(),
             format!("User {} has been banned from {} {}!", username, policy, expiry),
-            timestamp,
         )
     }
 }
@@ -75,13 +73,13 @@ async fn main() {
         .with_token(Some(config.token))
         .on_disconnect(on_disconnected)
         .on_connect_error(on_connect_error)
-        .on_connect(move |ctx, _, _| on_connected(ctx, &tx))
+        .on_connect(move |ctx, _, _| on_connected(ctx, &tx, start))
         .build()
         .expect("failed to connect");
 
     let _ = tokio::join!(
         launch_connection(&ctx),
-        consume_messages(rx, start, &config.webhook_url),
+        consume_messages(rx, &config.webhook_url),
         close_connection(&ctx),
     );
 }
@@ -100,13 +98,13 @@ async fn launch_connection(ctx: &DbConnection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn on_connected(ctx: &DbConnection, tx: &mpsc::UnboundedSender<ChatMessage>) {
+fn on_connected(ctx: &DbConnection, tx: &mpsc::UnboundedSender<ChatMessage>, start: i32) {
     println!("connected!");
     let (tx_msg, tx_mod) = (tx.clone(), tx.clone());
     ctx.db.chat_message_state()
-        .on_insert(move |ctx, row| on_message(ctx, row.clone(), &tx_msg));
+        .on_insert(move |ctx, row| on_message(ctx, row.clone(), &tx_msg, start));
     ctx.db.user_moderation_state()
-        .on_insert(move |ctx, row| on_moderation(ctx, row, &tx_mod));
+        .on_insert(move |ctx, row| on_moderation(ctx, row, &tx_mod, start));
 
     ctx.subscription_builder().subscribe([
         "SELECT * FROM chat_message_state",
@@ -117,7 +115,9 @@ fn on_connected(ctx: &DbConnection, tx: &mpsc::UnboundedSender<ChatMessage>) {
     ]);
 }
 
-fn on_message(ctx: &EventContext, row: ChatMessageState, tx: &mpsc::UnboundedSender<ChatMessage>) {
+fn on_message(ctx: &EventContext, row: ChatMessageState, tx: &mpsc::UnboundedSender<ChatMessage>, start: i32) {
+    if row.timestamp < start { return; }
+
     const EMPIRE_INTERNAL: i32 = ChatChannel::EmpireInternal as i32;
     const EMPIRE_PUBLIC: i32 = ChatChannel::EmpirePublic as i32;
     const CLAIM: i32 = ChatChannel::Claim as i32;
@@ -131,7 +131,7 @@ fn on_message(ctx: &EventContext, row: ChatMessageState, tx: &mpsc::UnboundedSen
                 .map(|e| e.name);
 
             if let Some(empire) = empire {
-                tx.send(ChatMessage::empire(row.username, empire, row.text, row.timestamp)).unwrap();
+                tx.send(ChatMessage::empire(row.username, empire, row.text)).unwrap();
             } else {
                 eprintln!("no empire found for id {}", row.target_id);
             }
@@ -143,33 +143,35 @@ fn on_message(ctx: &EventContext, row: ChatMessageState, tx: &mpsc::UnboundedSen
                 .map(|c| c.name);
 
             if let Some(claim) = claim {
-                tx.send(ChatMessage::claim(row.username, claim, row.text, row.timestamp)).unwrap();
+                tx.send(ChatMessage::claim(row.username, claim, row.text)).unwrap();
             } else {
                 eprintln!("no claim found for id {}", row.target_id);
             }
         },
-        REGION => tx.send(ChatMessage::new(row.username, row.text, row.timestamp)).unwrap(),
+        REGION => tx.send(ChatMessage::new(row.username, row.text)).unwrap(),
         _ => (),
     };
 }
 
-fn on_moderation(ctx: &EventContext, row: &UserModerationState, tx: &mpsc::UnboundedSender<ChatMessage>) {
+fn on_moderation(ctx: &EventContext, row: &UserModerationState, tx: &mpsc::UnboundedSender<ChatMessage>, start: i32) {
+    let timestamp = (row.created_time.to_micros_since_unix_epoch() / 1_000_000) as i32;
+    if timestamp < start { return; }
+
     let user = ctx.db.player_username_state()
         .entity_id()
         .find(&row.target_entity_id)
         .map(|p| p.username);
 
     if let Some(user) = user {
-        let timestamp = (row.created_time.to_micros_since_unix_epoch() / 1_000_000) as i32;
         let message = match row.user_moderation_policy {
             PermanentBlockLogin =>
-                ChatMessage::moderation(user, "logging in", "permanently", timestamp),
+                ChatMessage::moderation(user, "logging in", "permanently"),
             TemporaryBlockLogin =>
-                ChatMessage::moderation(user, "logging in", &as_expiry(row.expiration_time), timestamp),
+                ChatMessage::moderation(user, "logging in", &as_expiry(row.expiration_time)),
             BlockChat =>
-                ChatMessage::moderation(user, "chatting", &as_expiry(row.expiration_time), timestamp),
+                ChatMessage::moderation(user, "chatting", &as_expiry(row.expiration_time)),
             BlockConstruct =>
-                ChatMessage::moderation(user, "building", &as_expiry(row.expiration_time), timestamp),
+                ChatMessage::moderation(user, "building", &as_expiry(row.expiration_time)),
         };
         tx.send(message).unwrap();
     } else {
@@ -181,14 +183,10 @@ fn as_expiry(expiry: Timestamp) -> String {
     format!("until <t:{}:f>!", expiry.to_micros_since_unix_epoch() / 1_000_000)
 }
 
-async fn consume_messages(mut rx: mpsc::UnboundedReceiver<ChatMessage>, start: i32, webhook_url: &str) {
+async fn consume_messages(mut rx: mpsc::UnboundedReceiver<ChatMessage>, webhook_url: &str) {
     let client = reqwest::Client::new();
 
     while let Some(msg) = rx.recv().await {
-        if msg.timestamp < start {
-            continue;
-        }
-
         println!("{}: {}", msg.username, msg.content);
         if webhook_url.is_empty() {
             continue;
