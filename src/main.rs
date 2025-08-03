@@ -68,7 +68,7 @@ async fn main() {
         "SELECT * FROM claim_state",
         "SELECT * FROM empire_state",
         "SELECT * FROM player_username_state",
-        &format!("SELECT * FROM chat_message_state WHERE timestamp > {}", start_ms),
+        &format!("SELECT * FROM chat_message_state WHERE channel_id > 2 AND timestamp > {}", start_ms),
         //&format!("SELECT * FROM user_moderation_state WHERE created_time > {}", start_ms * 1_000_000),
     ]);
 
