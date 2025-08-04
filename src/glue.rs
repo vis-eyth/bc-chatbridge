@@ -1,11 +1,10 @@
 use anyhow::Result;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
-use spacetimedb_sdk::__codegen::SpacetimeModule;
-use spacetimedb_sdk::DbConnectionBuilder;
+use serde;
+use spacetimedb_sdk::{DbConnectionBuilder, __codegen::SpacetimeModule};
 use tokio::sync::mpsc::UnboundedSender;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Config {
     webhook_url: String,
     cluster_url: String,

@@ -4,10 +4,12 @@ use module_bindings::{*, UserModerationPolicy::*};
 mod glue;
 use glue::{Config, Configurable, with_channel};
 
+use serde;
 use spacetimedb_sdk::{DbContext, Table, Timestamp};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-
+#[derive(serde::Serialize)]
+#[serde(untagged)]
 enum Message {
     Disconnect,
     Chat {
@@ -17,9 +19,7 @@ enum Message {
 }
 
 impl Message {
-    pub fn chat(username: String, content: String) -> Self {
-        Self::Chat{ username, content: content.replace("\"", "\\\"") }
-    }
+    pub fn chat(username: String, content: String) -> Self { Self::Chat{ username, content } }
 
     pub fn claim(username: String, claim: String, content: String) -> Self {
         Self::chat(format!("{} [{}]", username, claim), content)
@@ -160,15 +160,15 @@ async fn consume(mut rx: UnboundedReceiver<Message>, webhook_url: String) {
     let client = reqwest::Client::new();
 
     while let Some(msg) = rx.recv().await {
-        if let Message::Disconnect = msg { break }
+        if let Message::Disconnect = &msg { break }
 
-        if let Message::Chat {username, content} = msg {
+        if let Message::Chat {username, content} = &msg {
             println!("{}: {}", username, content);
             if webhook_url.is_empty() {
                 continue;
             }
 
-            let payload = format!(r#"{{"username": "{}", "content": "{}"}}"#, username, content);
+            let payload = serde_json::to_string(&msg).unwrap();
             let response = client
                 .post(&webhook_url)
                 .header("Content-Type", "application/json")
